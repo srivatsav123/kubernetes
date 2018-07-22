@@ -97,7 +97,6 @@ func TestAddFlags(t *testing.T) {
 		"--enable-logs-handler=false",
 		"--enable-swagger-ui=true",
 		"--endpoint-reconciler-type=" + string(reconcilers.LeaseEndpointReconcilerType),
-		"--etcd-quorum-read=false",
 		"--etcd-keyfile=/var/run/kubernetes/etcd.key",
 		"--etcd-certfile=/var/run/kubernetes/etcdce.crt",
 		"--etcd-cafile=/var/run/kubernetes/etcdca.crt",
