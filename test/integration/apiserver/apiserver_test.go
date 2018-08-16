@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/golang/glog"
+	apps "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
 	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -85,8 +86,8 @@ func path(resource, namespace, name string) string {
 	return testapi.Extensions.ResourcePath(resource, namespace, name)
 }
 
-func newRS(namespace string) *v1beta1.ReplicaSet {
-	return &v1beta1.ReplicaSet{
+func newRS(namespace string) *apps.ReplicaSet {
+	return &apps.ReplicaSet{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ReplicaSet",
 			APIVersion: "extensions/v1beta1",
@@ -95,7 +96,7 @@ func newRS(namespace string) *v1beta1.ReplicaSet {
 			Namespace:    namespace,
 			GenerateName: "apiserver-test",
 		},
-		Spec: v1beta1.ReplicaSetSpec{
+		Spec: apps.ReplicaSetSpec{
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"name": "test"},
@@ -129,7 +130,7 @@ func Test202StatusCode(t *testing.T) {
 	ns := framework.CreateTestingNamespace("status-code", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
 
-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
+	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
 
 	// 1. Create the resource without any finalizer and then delete it without setting DeleteOptions.
 	// Verify that server returns 200 in this case.
@@ -179,7 +180,7 @@ func TestAPIListChunking(t *testing.T) {
 	ns := framework.CreateTestingNamespace("list-paging", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
 
-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
+	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
 
 	for i := 0; i < 4; i++ {
 		rs := newRS(ns.Name)
