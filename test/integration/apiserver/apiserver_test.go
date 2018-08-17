@@ -29,7 +29,6 @@ import (
 	"github.com/golang/glog"
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -90,13 +89,14 @@ func newRS(namespace string) *apps.ReplicaSet {
 	return &apps.ReplicaSet{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ReplicaSet",
-			APIVersion: "extensions/v1beta1",
+			APIVersion: "apps/v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:    namespace,
 			GenerateName: "apiserver-test",
 		},
 		Spec: apps.ReplicaSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"name": "test"}},
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"name": "test"},
@@ -229,7 +229,7 @@ func TestAPIListChunking(t *testing.T) {
 	}
 	var names []string
 	if err := meta.EachListItem(listObj, func(obj runtime.Object) error {
-		rs := obj.(*v1beta1.ReplicaSet)
+		rs := obj.(*apps.ReplicaSet)
 		names = append(names, rs.Name)
 		return nil
 	}); err != nil {
