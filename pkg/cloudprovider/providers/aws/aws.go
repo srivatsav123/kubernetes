@@ -22,12 +22,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	gcfg "gopkg.in/gcfg.v1"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -44,10 +43,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/golang/glog"
-	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/record"
-
-	"path"
+	gcfg "gopkg.in/gcfg.v1"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -55,12 +51,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	cloudprovider "k8s.io/cloud-provider"
+	kubelet "k8s.io/kubelet"
 	"k8s.io/kubernetes/pkg/api/v1/service"
 	"k8s.io/kubernetes/pkg/controller"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -2365,12 +2363,12 @@ func (c *Cloud) GetVolumeLabels(volumeName KubernetesVolumeID) (map[string]strin
 		return nil, fmt.Errorf("volume did not have AZ information: %q", aws.StringValue(info.VolumeId))
 	}
 
-	labels[kubeletapis.LabelZoneFailureDomain] = az
+	labels[kubelet.LabelZoneFailureDomain] = az
 	region, err := azToRegion(az)
 	if err != nil {
 		return nil, err
 	}
-	labels[kubeletapis.LabelZoneRegion] = region
+	labels[kubelet.LabelZoneRegion] = region
 
 	return labels, nil
 }

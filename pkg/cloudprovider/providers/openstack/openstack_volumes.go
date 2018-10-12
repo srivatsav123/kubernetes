@@ -26,14 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/types"
-	cloudprovider "k8s.io/cloud-provider"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
-	k8s_volume "k8s.io/kubernetes/pkg/volume"
-	volumeutil "k8s.io/kubernetes/pkg/volume/util"
-
+	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
 	volumeexpand "github.com/gophercloud/gophercloud/openstack/blockstorage/extensions/volumeactions"
 	volumes_v1 "github.com/gophercloud/gophercloud/openstack/blockstorage/v1/volumes"
@@ -42,7 +35,13 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/volumeattach"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/golang/glog"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	cloudprovider "k8s.io/cloud-provider"
+	kubelet "k8s.io/kubelet"
+	k8s_volume "k8s.io/kubernetes/pkg/volume"
+	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
 
 type volumeService interface {
@@ -710,8 +709,8 @@ func (os *OpenStack) GetLabelsForVolume(ctx context.Context, pv *v1.PersistentVo
 
 	// Construct Volume Labels
 	labels := make(map[string]string)
-	labels[kubeletapis.LabelZoneFailureDomain] = volume.AvailabilityZone
-	labels[kubeletapis.LabelZoneRegion] = os.region
+	labels[kubelet.LabelZoneFailureDomain] = volume.AvailabilityZone
+	labels[kubelet.LabelZoneRegion] = os.region
 	glog.V(4).Infof("The Volume %s has labels %v", pv.Spec.Cinder.VolumeID, labels)
 
 	return labels, nil

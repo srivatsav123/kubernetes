@@ -33,9 +33,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	kubelet "k8s.io/kubelet"
 	serviceapi "k8s.io/kubernetes/pkg/api/v1/service"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/azure/auth"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2017-09-01/network"
@@ -1096,7 +1096,7 @@ func getClusterResources(az *Cloud, vmCount int, availabilitySetCount int) (clus
 			ObjectMeta: metav1.ObjectMeta{
 				Name: vmName,
 				Labels: map[string]string{
-					kubeletapis.LabelHostname: vmName,
+					kubelet.LabelHostname: vmName,
 				},
 			},
 		}
