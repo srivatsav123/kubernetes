@@ -30,7 +30,6 @@ import (
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
 )
@@ -281,8 +280,8 @@ func (c *Cloud) GetAzureDiskLabels(diskURI string) (map[string]string, error) {
 	zone := c.makeZone(zoneID)
 	glog.V(4).Infof("Got zone %q for Azure disk %q", zone, diskName)
 	labels := map[string]string{
-		kubeletapis.LabelZoneRegion:        c.Location,
-		kubeletapis.LabelZoneFailureDomain: zone,
+		kubelet.LabelZoneRegion:        c.Location,
+		kubelet.LabelZoneFailureDomain: zone,
 	}
 	return labels, nil
 }
