@@ -27,7 +27,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"k8s.io/apimachinery/pkg/util/sets"
 	cloudprovider "k8s.io/cloud-provider"
-	"k8s.io/kubelet"
+	kubelet "k8s.io/kubelet"
 )
 
 // TODO TODO write a test for GetDiskByNameUnknownZone and make sure casting logic works
