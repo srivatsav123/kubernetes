@@ -1,0 +1,1410 @@
+From 6a2023546b0d7a48e80b17e698e71b2eb25c0170 Mon Sep 17 00:00:00 2001
+From: Weibin Lin <linweibin1@huawei.com>
+Date: Thu, 16 Aug 2018 16:12:33 +0800
+Subject: [PATCH] update deployment, daemonset, replicaset, statefulset to
+ apps/v1
+
+---
+ cmd/kube-controller-manager/app/core.go            |   2 +-
+ cmd/kube-controller-manager/app/policy.go          |   6 +-
+ pkg/controller/daemon/update.go                    |   6 +-
+ pkg/controller/disruption/BUILD                    |   6 +-
+ pkg/controller/disruption/disruption.go            |  16 ++-
+ pkg/controller/disruption/disruption_test.go       |  29 +++--
+ .../nodelifecycle/node_lifecycle_controller.go     |  10 +-
+ .../node_lifecycle_controller_test.go              |  15 +--
+ pkg/controller/util/node/controller_utils.go       |   4 +-
+ pkg/kubectl/rollback.go                            |   2 +-
+ test/e2e/apimachinery/garbage_collector.go         |  22 ++--
+ test/e2e/apimachinery/initializers.go              |  14 +--
+ test/e2e/apps/disruption.go                        |   8 +-
+ .../custom_metrics_stackdriver_autoscaling.go      |   2 +-
+ test/e2e/autoscaling/dns_autoscaling.go            |   2 +-
+ test/e2e/common/autoscaling_utils.go               |   4 +-
+ test/e2e/framework/ingress/ingress_utils.go        |  15 +--
+ test/e2e/framework/util.go                         |   8 +-
+ test/e2e/kubectl/kubectl.go                        |   2 +-
+ test/e2e/network/ingress.go                        |   6 +-
+ test/e2e/network/scale/ingress.go                  |  13 +-
+ test/e2e/scheduling/rescheduler.go                 | 133 +++++++++++++++++++++
+ test/e2e/storage/persistent_volumes-local.go       |  11 +-
+ .../vsphere/vsphere_volume_node_poweroff.go        |   3 +-
+ test/e2e/upgrades/apps/daemonsets.go               |  12 +-
+ test/e2e/upgrades/kube_proxy_migration.go          |   6 +-
+ test/integration/apiserver/apiserver_test.go       |  17 +--
+ test/integration/deployment/deployment_test.go     |   4 +-
+ test/integration/evictions/evictions_test.go       |   6 +-
+ test/integration/replicaset/replicaset_test.go     |   6 +-
+ test/integration/scheduler/taint_test.go           |   2 +-
+ test/integration/scheduler/util.go                 |   6 +-
+ test/utils/create_resources.go                     |  14 +--
+ test/utils/delete_resources.go                     |   6 +-
+ test/utils/runners.go                              |  14 +--
+ 35 files changed, 282 insertions(+), 150 deletions(-)
+ create mode 100644 test/e2e/scheduling/rescheduler.go
+
+diff --git a/cmd/kube-controller-manager/app/core.go b/cmd/kube-controller-manager/app/core.go
+index ace08a9818..4a9643936e 100644
+--- a/cmd/kube-controller-manager/app/core.go
++++ b/cmd/kube-controller-manager/app/core.go
+@@ -124,7 +124,7 @@ func startNodeLifecycleController(ctx ControllerContext) (http.Handler, bool, er
+ 		ctx.InformerFactory.Coordination().V1beta1().Leases(),
+ 		ctx.InformerFactory.Core().V1().Pods(),
+ 		ctx.InformerFactory.Core().V1().Nodes(),
+-		ctx.InformerFactory.Extensions().V1beta1().DaemonSets(),
++		ctx.InformerFactory.Apps().V1().DaemonSets(),
+ 		ctx.Cloud,
+ 		ctx.ClientBuilder.ClientOrDie("node-controller"),
+ 		ctx.ComponentConfig.KubeCloudShared.NodeMonitorPeriod.Duration,
+diff --git a/cmd/kube-controller-manager/app/policy.go b/cmd/kube-controller-manager/app/policy.go
+index 3dc430300c..2008d3183c 100644
+--- a/cmd/kube-controller-manager/app/policy.go
++++ b/cmd/kube-controller-manager/app/policy.go
+@@ -44,9 +44,9 @@ func startDisruptionController(ctx ControllerContext) (http.Handler, bool, error
+ 		ctx.InformerFactory.Core().V1().Pods(),
+ 		ctx.InformerFactory.Policy().V1beta1().PodDisruptionBudgets(),
+ 		ctx.InformerFactory.Core().V1().ReplicationControllers(),
+-		ctx.InformerFactory.Extensions().V1beta1().ReplicaSets(),
+-		ctx.InformerFactory.Extensions().V1beta1().Deployments(),
+-		ctx.InformerFactory.Apps().V1beta1().StatefulSets(),
++		ctx.InformerFactory.Apps().V1().ReplicaSets(),
++		ctx.InformerFactory.Apps().V1().Deployments(),
++		ctx.InformerFactory.Apps().V1().StatefulSets(),
+ 		ctx.ClientBuilder.ClientOrDie("disruption-controller"),
+ 	).Run(ctx.Stop)
+ 	return nil, true, nil
+diff --git a/pkg/controller/daemon/update.go b/pkg/controller/daemon/update.go
+index 74e42cc59f..0e6fc6fab4 100644
+--- a/pkg/controller/daemon/update.go
++++ b/pkg/controller/daemon/update.go
+@@ -261,7 +261,7 @@ func (dsc *DaemonSetsController) controlledHistories(ds *apps.DaemonSet) ([]*app
+ 	// If any adoptions are attempted, we should first recheck for deletion with
+ 	// an uncached quorum read sometime after listing Pods (see #42639).
+ 	canAdoptFunc := controller.RecheckDeletionTimestamp(func() (metav1.Object, error) {
+-		fresh, err := dsc.kubeClient.ExtensionsV1beta1().DaemonSets(ds.Namespace).Get(ds.Name, metav1.GetOptions{})
++		fresh, err := dsc.kubeClient.AppsV1().DaemonSets(ds.Namespace).Get(ds.Name, metav1.GetOptions{})
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -348,7 +348,7 @@ func (dsc *DaemonSetsController) snapshot(ds *apps.DaemonSet, revision int64) (*
+ 
+ 		// Handle name collisions between different history
+ 		// Get the latest DaemonSet from the API server to make sure collision count is only increased when necessary
+-		currDS, getErr := dsc.kubeClient.ExtensionsV1beta1().DaemonSets(ds.Namespace).Get(ds.Name, metav1.GetOptions{})
++		currDS, getErr := dsc.kubeClient.AppsV1().DaemonSets(ds.Namespace).Get(ds.Name, metav1.GetOptions{})
+ 		if getErr != nil {
+ 			return nil, getErr
+ 		}
+@@ -360,7 +360,7 @@ func (dsc *DaemonSetsController) snapshot(ds *apps.DaemonSet, revision int64) (*
+ 			currDS.Status.CollisionCount = new(int32)
+ 		}
+ 		*currDS.Status.CollisionCount++
+-		_, updateErr := dsc.kubeClient.ExtensionsV1beta1().DaemonSets(ds.Namespace).UpdateStatus(currDS)
++		_, updateErr := dsc.kubeClient.AppsV1().DaemonSets(ds.Namespace).UpdateStatus(currDS)
+ 		if updateErr != nil {
+ 			return nil, updateErr
+ 		}
+diff --git a/pkg/controller/disruption/BUILD b/pkg/controller/disruption/BUILD
+index 37491c7227..5f0a01f38c 100644
+--- a/pkg/controller/disruption/BUILD
++++ b/pkg/controller/disruption/BUILD
+@@ -23,17 +23,15 @@ go_library(
+         "//staging/src/k8s.io/apimachinery/pkg/util/intstr:go_default_library",
+         "//staging/src/k8s.io/apimachinery/pkg/util/runtime:go_default_library",
+         "//staging/src/k8s.io/apimachinery/pkg/util/wait:go_default_library",
+-        "//staging/src/k8s.io/client-go/informers/apps/v1beta1:go_default_library",
++        "//staging/src/k8s.io/client-go/informers/apps/v1:go_default_library",
+         "//staging/src/k8s.io/client-go/informers/core/v1:go_default_library",
+-        "//staging/src/k8s.io/client-go/informers/extensions/v1beta1:go_default_library",
+         "//staging/src/k8s.io/client-go/informers/policy/v1beta1:go_default_library",
+         "//staging/src/k8s.io/client-go/kubernetes:go_default_library",
+         "//staging/src/k8s.io/client-go/kubernetes/scheme:go_default_library",
+         "//staging/src/k8s.io/client-go/kubernetes/typed/core/v1:go_default_library",
+         "//staging/src/k8s.io/client-go/kubernetes/typed/policy/v1beta1:go_default_library",
+-        "//staging/src/k8s.io/client-go/listers/apps/v1beta1:go_default_library",
++        "//staging/src/k8s.io/client-go/listers/apps/v1:go_default_library",
+         "//staging/src/k8s.io/client-go/listers/core/v1:go_default_library",
+-        "//staging/src/k8s.io/client-go/listers/extensions/v1beta1:go_default_library",
+         "//staging/src/k8s.io/client-go/listers/policy/v1beta1:go_default_library",
+         "//staging/src/k8s.io/client-go/tools/cache:go_default_library",
+         "//staging/src/k8s.io/client-go/tools/record:go_default_library",
+diff --git a/pkg/controller/disruption/disruption.go b/pkg/controller/disruption/disruption.go
+index b6ae484a8c..04cfb6709e 100644
+--- a/pkg/controller/disruption/disruption.go
++++ b/pkg/controller/disruption/disruption.go
+@@ -31,17 +31,15 @@ import (
+ 	"k8s.io/apimachinery/pkg/util/intstr"
+ 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+-	appsinformers "k8s.io/client-go/informers/apps/v1beta1"
++	appsv1informers "k8s.io/client-go/informers/apps/v1"
+ 	coreinformers "k8s.io/client-go/informers/core/v1"
+-	extensionsinformers "k8s.io/client-go/informers/extensions/v1beta1"
+ 	policyinformers "k8s.io/client-go/informers/policy/v1beta1"
+ 	clientset "k8s.io/client-go/kubernetes"
+ 	"k8s.io/client-go/kubernetes/scheme"
+ 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+ 	policyclientset "k8s.io/client-go/kubernetes/typed/policy/v1beta1"
+-	appslisters "k8s.io/client-go/listers/apps/v1beta1"
++	appslisters "k8s.io/client-go/listers/apps/v1"
+ 	corelisters "k8s.io/client-go/listers/core/v1"
+-	extensionslisters "k8s.io/client-go/listers/extensions/v1beta1"
+ 	policylisters "k8s.io/client-go/listers/policy/v1beta1"
+ 	"k8s.io/client-go/tools/cache"
+ 	"k8s.io/client-go/tools/record"
+@@ -79,10 +77,10 @@ type DisruptionController struct {
+ 	rcLister       corelisters.ReplicationControllerLister
+ 	rcListerSynced cache.InformerSynced
+ 
+-	rsLister       extensionslisters.ReplicaSetLister
++	rsLister       appslisters.ReplicaSetLister
+ 	rsListerSynced cache.InformerSynced
+ 
+-	dLister       extensionslisters.DeploymentLister
++	dLister       appslisters.DeploymentLister
+ 	dListerSynced cache.InformerSynced
+ 
+ 	ssLister       appslisters.StatefulSetLister
+@@ -113,9 +111,9 @@ func NewDisruptionController(
+ 	podInformer coreinformers.PodInformer,
+ 	pdbInformer policyinformers.PodDisruptionBudgetInformer,
+ 	rcInformer coreinformers.ReplicationControllerInformer,
+-	rsInformer extensionsinformers.ReplicaSetInformer,
+-	dInformer extensionsinformers.DeploymentInformer,
+-	ssInformer appsinformers.StatefulSetInformer,
++	rsInformer appsv1informers.ReplicaSetInformer,
++	dInformer appsv1informers.DeploymentInformer,
++	ssInformer appsv1informers.StatefulSetInformer,
+ 	kubeClient clientset.Interface,
+ ) *DisruptionController {
+ 	dc := &DisruptionController{
+diff --git a/pkg/controller/disruption/disruption_test.go b/pkg/controller/disruption/disruption_test.go
+index b0dc45c2d9..add3140869 100644
+--- a/pkg/controller/disruption/disruption_test.go
++++ b/pkg/controller/disruption/disruption_test.go
+@@ -23,9 +23,8 @@ import (
+ 	"testing"
+ 	"time"
+ 
+-	apps "k8s.io/api/apps/v1beta1"
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	policy "k8s.io/api/policy/v1beta1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/apimachinery/pkg/util/intstr"
+@@ -102,9 +101,9 @@ func newFakeDisruptionController() (*disruptionController, *pdbStates) {
+ 		informerFactory.Core().V1().Pods(),
+ 		informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
+ 		informerFactory.Core().V1().ReplicationControllers(),
+-		informerFactory.Extensions().V1beta1().ReplicaSets(),
+-		informerFactory.Extensions().V1beta1().Deployments(),
+-		informerFactory.Apps().V1beta1().StatefulSets(),
++		informerFactory.Apps().V1().ReplicaSets(),
++		informerFactory.Apps().V1().Deployments(),
++		informerFactory.Apps().V1().StatefulSets(),
+ 		nil,
+ 	)
+ 	dc.getUpdater = func() updater { return ps.Set }
+@@ -120,9 +119,9 @@ func newFakeDisruptionController() (*disruptionController, *pdbStates) {
+ 		informerFactory.Core().V1().Pods().Informer().GetStore(),
+ 		informerFactory.Policy().V1beta1().PodDisruptionBudgets().Informer().GetStore(),
+ 		informerFactory.Core().V1().ReplicationControllers().Informer().GetStore(),
+-		informerFactory.Extensions().V1beta1().ReplicaSets().Informer().GetStore(),
+-		informerFactory.Extensions().V1beta1().Deployments().Informer().GetStore(),
+-		informerFactory.Apps().V1beta1().StatefulSets().Informer().GetStore(),
++		informerFactory.Apps().V1().ReplicaSets().Informer().GetStore(),
++		informerFactory.Apps().V1().Deployments().Informer().GetStore(),
++		informerFactory.Apps().V1().StatefulSets().Informer().GetStore(),
+ 	}, ps
+ }
+ 
+@@ -192,7 +191,7 @@ func updatePodOwnerToRc(t *testing.T, pod *v1.Pod, rc *v1.ReplicationController)
+ 	pod.OwnerReferences = append(pod.OwnerReferences, controllerReference)
+ }
+ 
+-func updatePodOwnerToRs(t *testing.T, pod *v1.Pod, rs *extensions.ReplicaSet) {
++func updatePodOwnerToRs(t *testing.T, pod *v1.Pod, rs *apps.ReplicaSet) {
+ 	var controllerReference metav1.OwnerReference
+ 	var trueVar = true
+ 	controllerReference = metav1.OwnerReference{UID: rs.UID, APIVersion: controllerKindRS.GroupVersion().String(), Kind: controllerKindRS.Kind, Name: rs.Name, Controller: &trueVar}
+@@ -258,8 +257,8 @@ func newReplicationController(t *testing.T, size int32) (*v1.ReplicationControll
+ 	return rc, rcName
+ }
+ 
+-func newDeployment(t *testing.T, size int32) (*extensions.Deployment, string) {
+-	d := &extensions.Deployment{
++func newDeployment(t *testing.T, size int32) (*apps.Deployment, string) {
++	d := &apps.Deployment{
+ 		TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			UID:             uuid.NewUUID(),
+@@ -268,7 +267,7 @@ func newDeployment(t *testing.T, size int32) (*extensions.Deployment, string) {
+ 			ResourceVersion: "18",
+ 			Labels:          fooBar(),
+ 		},
+-		Spec: extensions.DeploymentSpec{
++		Spec: apps.DeploymentSpec{
+ 			Replicas: &size,
+ 			Selector: newSelFooBar(),
+ 		},
+@@ -282,8 +281,8 @@ func newDeployment(t *testing.T, size int32) (*extensions.Deployment, string) {
+ 	return d, dName
+ }
+ 
+-func newReplicaSet(t *testing.T, size int32) (*extensions.ReplicaSet, string) {
+-	rs := &extensions.ReplicaSet{
++func newReplicaSet(t *testing.T, size int32) (*apps.ReplicaSet, string) {
++	rs := &apps.ReplicaSet{
+ 		TypeMeta: metav1.TypeMeta{APIVersion: "v1"},
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			UID:             uuid.NewUUID(),
+@@ -292,7 +291,7 @@ func newReplicaSet(t *testing.T, size int32) (*extensions.ReplicaSet, string) {
+ 			ResourceVersion: "18",
+ 			Labels:          fooBar(),
+ 		},
+-		Spec: extensions.ReplicaSetSpec{
++		Spec: apps.ReplicaSetSpec{
+ 			Replicas: &size,
+ 			Selector: newSelFooBar(),
+ 		},
+diff --git a/pkg/controller/nodelifecycle/node_lifecycle_controller.go b/pkg/controller/nodelifecycle/node_lifecycle_controller.go
+index bd6785f3f8..e4c325a95a 100644
+--- a/pkg/controller/nodelifecycle/node_lifecycle_controller.go
++++ b/pkg/controller/nodelifecycle/node_lifecycle_controller.go
+@@ -41,14 +41,14 @@ import (
+ 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
++	appsv1informers "k8s.io/client-go/informers/apps/v1"
+ 	coordinformers "k8s.io/client-go/informers/coordination/v1beta1"
+ 	coreinformers "k8s.io/client-go/informers/core/v1"
+-	extensionsinformers "k8s.io/client-go/informers/extensions/v1beta1"
+ 	clientset "k8s.io/client-go/kubernetes"
+ 	"k8s.io/client-go/kubernetes/scheme"
++	appslisters "k8s.io/client-go/listers/apps/v1"
+ 	coordlisters "k8s.io/client-go/listers/coordination/v1beta1"
+ 	corelisters "k8s.io/client-go/listers/core/v1"
+-	extensionslisters "k8s.io/client-go/listers/extensions/v1beta1"
+ 	"k8s.io/client-go/tools/cache"
+ 	"k8s.io/client-go/tools/record"
+ 	"k8s.io/client-go/util/flowcontrol"
+@@ -175,7 +175,7 @@ type Controller struct {
+ 
+ 	zoneStates map[string]ZoneState
+ 
+-	daemonSetStore          extensionslisters.DaemonSetLister
++	daemonSetStore          appslisters.DaemonSetLister
+ 	daemonSetInformerSynced cache.InformerSynced
+ 
+ 	leaseLister                 coordlisters.LeaseLister
+@@ -245,7 +245,7 @@ func NewNodeLifecycleController(
+ 	leaseInformer coordinformers.LeaseInformer,
+ 	podInformer coreinformers.PodInformer,
+ 	nodeInformer coreinformers.NodeInformer,
+-	daemonSetInformer extensionsinformers.DaemonSetInformer,
++	daemonSetInformer appsv1informers.DaemonSetInformer,
+ 	cloud cloudprovider.Interface,
+ 	kubeClient clientset.Interface,
+ 	nodeMonitorPeriod time.Duration,
+@@ -1011,7 +1011,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
+ 				status:                   &node.Status,
+ 				probeTimestamp:           nc.nodeHealthMap[node.Name].probeTimestamp,
+ 				readyTransitionTimestamp: nc.now(),
+-				lease:                    observedLease,
++				lease: observedLease,
+ 			}
+ 			return gracePeriod, observedReadyCondition, currentReadyCondition, nil
+ 		}
+diff --git a/pkg/controller/nodelifecycle/node_lifecycle_controller_test.go b/pkg/controller/nodelifecycle/node_lifecycle_controller_test.go
+index 3b17a9f86f..96e9624254 100644
+--- a/pkg/controller/nodelifecycle/node_lifecycle_controller_test.go
++++ b/pkg/controller/nodelifecycle/node_lifecycle_controller_test.go
+@@ -22,9 +22,9 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	coordv1beta1 "k8s.io/api/coordination/v1beta1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+ 	"k8s.io/apimachinery/pkg/api/resource"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+@@ -34,9 +34,9 @@ import (
+ 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+ 	utilfeaturetesting "k8s.io/apiserver/pkg/util/feature/testing"
+ 	"k8s.io/client-go/informers"
++	appsinformers "k8s.io/client-go/informers/apps/v1"
+ 	coordinformers "k8s.io/client-go/informers/coordination/v1beta1"
+ 	coreinformers "k8s.io/client-go/informers/core/v1"
+-	extensionsinformers "k8s.io/client-go/informers/extensions/v1beta1"
+ 	clientset "k8s.io/client-go/kubernetes"
+ 	"k8s.io/client-go/kubernetes/fake"
+ 	testcore "k8s.io/client-go/testing"
+@@ -69,7 +69,7 @@ type nodeLifecycleController struct {
+ 	*Controller
+ 	leaseInformer     coordinformers.LeaseInformer
+ 	nodeInformer      coreinformers.NodeInformer
+-	daemonSetInformer extensionsinformers.DaemonSetInformer
++	daemonSetInformer appsinformers.DaemonSetInformer
+ }
+ 
+ // doEviction does the fake eviction and returns the status of eviction operation.
+@@ -145,7 +145,7 @@ func newNodeLifecycleControllerFromClient(
+ 
+ 	leaseInformer := factory.Coordination().V1beta1().Leases()
+ 	nodeInformer := factory.Core().V1().Nodes()
+-	daemonSetInformer := factory.Extensions().V1beta1().DaemonSets()
++	daemonSetInformer := factory.Apps().V1().DaemonSets()
+ 
+ 	nc, err := NewNodeLifecycleController(
+ 		leaseInformer,
+@@ -203,7 +203,7 @@ func TestMonitorNodeHealthEvictPods(t *testing.T) {
+ 
+ 	table := []struct {
+ 		fakeNodeHandler     *testutil.FakeNodeHandler
+-		daemonSets          []extensions.DaemonSet
++		daemonSets          []apps.DaemonSet
+ 		timeToPass          time.Duration
+ 		newNodeStatus       v1.NodeStatus
+ 		secondNodeNewStatus v1.NodeStatus
+@@ -416,13 +416,13 @@ func TestMonitorNodeHealthEvictPods(t *testing.T) {
+ 					},
+ 				),
+ 			},
+-			daemonSets: []extensions.DaemonSet{
++			daemonSets: []apps.DaemonSet{
+ 				{
+ 					ObjectMeta: metav1.ObjectMeta{
+ 						Name:      "ds0",
+ 						Namespace: "default",
+ 					},
+-					Spec: extensions.DaemonSetSpec{
++					Spec: apps.DaemonSetSpec{
+ 						Selector: &metav1.LabelSelector{
+ 							MatchLabels: map[string]string{"daemon": "yes"},
+ 						},
+@@ -727,6 +727,7 @@ func TestPodStatusChange(t *testing.T) {
+ 	// Node created long time ago, node controller posted Unknown for a long period of time.
+ 	table := []struct {
+ 		fakeNodeHandler     *testutil.FakeNodeHandler
++		daemonSets          []apps.DaemonSet
+ 		timeToPass          time.Duration
+ 		newNodeStatus       v1.NodeStatus
+ 		secondNodeNewStatus v1.NodeStatus
+diff --git a/pkg/controller/util/node/controller_utils.go b/pkg/controller/util/node/controller_utils.go
+index ff7ffe582b..a1f92dbfd5 100644
+--- a/pkg/controller/util/node/controller_utils.go
++++ b/pkg/controller/util/node/controller_utils.go
+@@ -33,7 +33,7 @@ import (
+ 
+ 	"k8s.io/api/core/v1"
+ 	clientset "k8s.io/client-go/kubernetes"
+-	extensionslisters "k8s.io/client-go/listers/extensions/v1beta1"
++	appslisters "k8s.io/client-go/listers/apps/v1"
+ 	cloudprovider "k8s.io/cloud-provider"
+ 	api "k8s.io/kubernetes/pkg/apis/core"
+ 	"k8s.io/kubernetes/pkg/controller"
+@@ -52,7 +52,7 @@ var (
+ // DeletePods will delete all pods from master running on given node,
+ // and return true if any pods were deleted, or were found pending
+ // deletion.
+-func DeletePods(kubeClient clientset.Interface, recorder record.EventRecorder, nodeName, nodeUID string, daemonStore extensionslisters.DaemonSetLister) (bool, error) {
++func DeletePods(kubeClient clientset.Interface, recorder record.EventRecorder, nodeName, nodeUID string, daemonStore appslisters.DaemonSetLister) (bool, error) {
+ 	remaining := false
+ 	selector := fields.OneTermEqualSelector(api.PodHostField, nodeName).String()
+ 	options := metav1.ListOptions{FieldSelector: selector}
+diff --git a/pkg/kubectl/rollback.go b/pkg/kubectl/rollback.go
+index bec725f6f9..7a06a0fda4 100644
+--- a/pkg/kubectl/rollback.go
++++ b/pkg/kubectl/rollback.go
+@@ -282,7 +282,7 @@ func (r *DaemonSetRollbacker) Rollback(obj runtime.Object, updatedAnnotations ma
+ 	}
+ 
+ 	// Restore revision
+-	if _, err = r.c.ExtensionsV1beta1().DaemonSets(accessor.GetNamespace()).Patch(accessor.GetName(), types.StrategicMergePatchType, toHistory.Data.Raw); err != nil {
++	if _, err = r.c.AppsV1().DaemonSets(accessor.GetNamespace()).Patch(accessor.GetName(), types.StrategicMergePatchType, toHistory.Data.Raw); err != nil {
+ 		return "", fmt.Errorf("failed restoring revision %d: %v", toRevision, err)
+ 	}
+ 
+diff --git a/test/e2e/apimachinery/garbage_collector.go b/test/e2e/apimachinery/garbage_collector.go
+index fa2f6f4e5f..0cca314046 100644
+--- a/test/e2e/apimachinery/garbage_collector.go
++++ b/test/e2e/apimachinery/garbage_collector.go
+@@ -21,10 +21,10 @@ import (
+ 	"sync/atomic"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	batchv1 "k8s.io/api/batch/v1"
+ 	batchv1beta1 "k8s.io/api/batch/v1beta1"
+ 	"k8s.io/api/core/v1"
+-	"k8s.io/api/extensions/v1beta1"
+ 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+ 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+ 	apiextensionstestserver "k8s.io/apiextensions-apiserver/test/integration/fixtures"
+@@ -111,17 +111,17 @@ func getPodTemplateSpec(labels map[string]string) v1.PodTemplateSpec {
+ 	}
+ }
+ 
+-func newOwnerDeployment(f *framework.Framework, deploymentName string, labels map[string]string) *v1beta1.Deployment {
++func newOwnerDeployment(f *framework.Framework, deploymentName string, labels map[string]string) *apps.Deployment {
+ 	replicas := int32(2)
+-	return &v1beta1.Deployment{
++	return &apps.Deployment{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: deploymentName,
+ 		},
+-		Spec: v1beta1.DeploymentSpec{
++		Spec: apps.DeploymentSpec{
+ 			Replicas: &replicas,
+ 			Selector: &metav1.LabelSelector{MatchLabels: labels},
+-			Strategy: v1beta1.DeploymentStrategy{
+-				Type: v1beta1.RollingUpdateDeploymentStrategyType,
++			Strategy: apps.DeploymentStrategy{
++				Type: apps.RollingUpdateDeploymentStrategyType,
+ 			},
+ 			Template: getPodTemplateSpec(labels),
+ 		},
+@@ -480,8 +480,8 @@ var _ = SIGDescribe("Garbage collector", func() {
+ 	*/
+ 	framework.ConformanceIt("should delete RS created by deployment when not orphaning", func() {
+ 		clientSet := f.ClientSet
+-		deployClient := clientSet.ExtensionsV1beta1().Deployments(f.Namespace.Name)
+-		rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(f.Namespace.Name)
++		deployClient := clientSet.AppsV1().Deployments(f.Namespace.Name)
++		rsClient := clientSet.AppsV1().ReplicaSets(f.Namespace.Name)
+ 		deploymentName := "simpletest.deployment"
+ 		uniqLabels := getUniqLabel("gctest", "delete_rs")
+ 		deployment := newOwnerDeployment(f, deploymentName, uniqLabels)
+@@ -539,8 +539,8 @@ var _ = SIGDescribe("Garbage collector", func() {
+ 	*/
+ 	framework.ConformanceIt("should orphan RS created by deployment when deleteOptions.PropagationPolicy is Orphan", func() {
+ 		clientSet := f.ClientSet
+-		deployClient := clientSet.ExtensionsV1beta1().Deployments(f.Namespace.Name)
+-		rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(f.Namespace.Name)
++		deployClient := clientSet.AppsV1().Deployments(f.Namespace.Name)
++		rsClient := clientSet.AppsV1().ReplicaSets(f.Namespace.Name)
+ 		deploymentName := "simpletest.deployment"
+ 		uniqLabels := getUniqLabel("gctest", "orphan_rs")
+ 		deployment := newOwnerDeployment(f, deploymentName, uniqLabels)
+@@ -593,7 +593,7 @@ var _ = SIGDescribe("Garbage collector", func() {
+ 			aggregatedError := utilerrors.NewAggregate(errList)
+ 			framework.Failf("Failed to verify remaining deployments, rs, and pods: %v", aggregatedError)
+ 		}
+-		rs, err := clientSet.ExtensionsV1beta1().ReplicaSets(f.Namespace.Name).List(metav1.ListOptions{})
++		rs, err := clientSet.AppsV1().ReplicaSets(f.Namespace.Name).List(metav1.ListOptions{})
+ 		if err != nil {
+ 			framework.Failf("Failed to list ReplicaSet %v", err)
+ 		}
+diff --git a/test/e2e/apimachinery/initializers.go b/test/e2e/apimachinery/initializers.go
+index f0381721f1..8aecb84c33 100644
+--- a/test/e2e/apimachinery/initializers.go
++++ b/test/e2e/apimachinery/initializers.go
+@@ -25,8 +25,8 @@ import (
+ 	. "github.com/onsi/gomega"
+ 
+ 	"k8s.io/api/admissionregistration/v1alpha1"
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	"k8s.io/api/extensions/v1beta1"
+ 	"k8s.io/apimachinery/pkg/api/errors"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/apimachinery/pkg/types"
+@@ -236,7 +236,7 @@ var _ = SIGDescribe("Initializers [Feature:Initializers]", func() {
+ 		time.Sleep(3 * time.Second)
+ 
+ 		// create a replicaset
+-		persistedRS, err := c.ExtensionsV1beta1().ReplicaSets(ns).Create(newReplicaset())
++		persistedRS, err := c.AppsV1().ReplicaSets(ns).Create(newReplicaset())
+ 		Expect(err).NotTo(HaveOccurred())
+ 		// wait for replicaset controller to confirm that it has handled the creation
+ 		err = waitForRSObservedGeneration(c, persistedRS.Namespace, persistedRS.Name, persistedRS.Generation)
+@@ -244,7 +244,7 @@ var _ = SIGDescribe("Initializers [Feature:Initializers]", func() {
+ 
+ 		// update the replicaset spec to trigger a resync
+ 		patch := []byte(`{"spec":{"minReadySeconds":5}}`)
+-		persistedRS, err = c.ExtensionsV1beta1().ReplicaSets(ns).Patch(persistedRS.Name, types.StrategicMergePatchType, patch)
++		persistedRS, err = c.AppsV1().ReplicaSets(ns).Patch(persistedRS.Name, types.StrategicMergePatchType, patch)
+ 		Expect(err).NotTo(HaveOccurred())
+ 
+ 		// wait for replicaset controller to confirm that it has handle the spec update
+@@ -296,15 +296,15 @@ func newUninitializedPod(podName string) *v1.Pod {
+ 	return pod
+ }
+ 
+-func newReplicaset() *v1beta1.ReplicaSet {
++func newReplicaset() *apps.ReplicaSet {
+ 	name := "initializer-test-replicaset"
+ 	replicas := int32(1)
+ 	labels := map[string]string{"initializer-test": "single-replicaset"}
+-	return &v1beta1.ReplicaSet{
++	return &apps.ReplicaSet{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: name,
+ 		},
+-		Spec: v1beta1.ReplicaSetSpec{
++		Spec: apps.ReplicaSetSpec{
+ 			Replicas: &replicas,
+ 			Template: v1.PodTemplateSpec{
+ 				ObjectMeta: metav1.ObjectMeta{
+@@ -405,7 +405,7 @@ func cleanupInitializer(c clientset.Interface, initializerConfigName, initialize
+ // waits till the RS status.observedGeneration matches metadata.generation.
+ func waitForRSObservedGeneration(c clientset.Interface, ns, name string, generation int64) error {
+ 	return wait.PollImmediate(1*time.Second, 1*time.Minute, func() (bool, error) {
+-		rs, err := c.ExtensionsV1beta1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
++		rs, err := c.AppsV1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
+ 		if err != nil {
+ 			return false, err
+ 		}
+diff --git a/test/e2e/apps/disruption.go b/test/e2e/apps/disruption.go
+index 8ae257565f..a35466730e 100644
+--- a/test/e2e/apps/disruption.go
++++ b/test/e2e/apps/disruption.go
+@@ -22,8 +22,8 @@ import (
+ 
+ 	. "github.com/onsi/ginkgo"
+ 	. "github.com/onsi/gomega"
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	policy "k8s.io/api/policy/v1beta1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/apimachinery/pkg/util/intstr"
+@@ -310,12 +310,12 @@ func createReplicaSetOrDie(cs kubernetes.Interface, ns string, size int32, exclu
+ 		}
+ 	}
+ 
+-	rs := &extensions.ReplicaSet{
++	rs := &apps.ReplicaSet{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name:      "rs",
+ 			Namespace: ns,
+ 		},
+-		Spec: extensions.ReplicaSetSpec{
++		Spec: apps.ReplicaSetSpec{
+ 			Replicas: &size,
+ 			Selector: &metav1.LabelSelector{
+ 				MatchLabels: map[string]string{"foo": "bar"},
+@@ -331,6 +331,6 @@ func createReplicaSetOrDie(cs kubernetes.Interface, ns string, size int32, exclu
+ 		},
+ 	}
+ 
+-	_, err := cs.ExtensionsV1beta1().ReplicaSets(ns).Create(rs)
++	_, err := cs.AppsV1().ReplicaSets(ns).Create(rs)
+ 	framework.ExpectNoError(err, "Creating replica set %q in namespace %q", rs.Name, ns)
+ }
+diff --git a/test/e2e/autoscaling/custom_metrics_stackdriver_autoscaling.go b/test/e2e/autoscaling/custom_metrics_stackdriver_autoscaling.go
+index 5277cb9c5d..89b1d3b840 100644
+--- a/test/e2e/autoscaling/custom_metrics_stackdriver_autoscaling.go
++++ b/test/e2e/autoscaling/custom_metrics_stackdriver_autoscaling.go
+@@ -437,7 +437,7 @@ func externalHPA(namespace string, metricTargets map[string]externalMetricTarget
+ func waitForReplicas(deploymentName, namespace string, cs clientset.Interface, timeout time.Duration, desiredReplicas int) {
+ 	interval := 20 * time.Second
+ 	err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+-		deployment, err := cs.ExtensionsV1beta1().Deployments(namespace).Get(deploymentName, metav1.GetOptions{})
++		deployment, err := cs.AppsV1().Deployments(namespace).Get(deploymentName, metav1.GetOptions{})
+ 		if err != nil {
+ 			framework.Failf("Failed to get replication controller %s: %v", deployment, err)
+ 		}
+diff --git a/test/e2e/autoscaling/dns_autoscaling.go b/test/e2e/autoscaling/dns_autoscaling.go
+index 4f85f11086..92fb14b0c0 100644
+--- a/test/e2e/autoscaling/dns_autoscaling.go
++++ b/test/e2e/autoscaling/dns_autoscaling.go
+@@ -292,7 +292,7 @@ func updateDNSScalingConfigMap(c clientset.Interface, configMap *v1.ConfigMap) e
+ func getDNSReplicas(c clientset.Interface) (int, error) {
+ 	label := labels.SelectorFromSet(labels.Set(map[string]string{ClusterAddonLabelKey: DNSLabelName}))
+ 	listOpts := metav1.ListOptions{LabelSelector: label.String()}
+-	deployments, err := c.ExtensionsV1beta1().Deployments(metav1.NamespaceSystem).List(listOpts)
++	deployments, err := c.AppsV1().Deployments(metav1.NamespaceSystem).List(listOpts)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+diff --git a/test/e2e/common/autoscaling_utils.go b/test/e2e/common/autoscaling_utils.go
+index 0e0d202b8d..7fd22d3813 100644
+--- a/test/e2e/common/autoscaling_utils.go
++++ b/test/e2e/common/autoscaling_utils.go
+@@ -340,14 +340,14 @@ func (rc *ResourceConsumer) GetReplicas() int {
+ 		}
+ 		return int(replicationController.Status.ReadyReplicas)
+ 	case KindDeployment:
+-		deployment, err := rc.clientSet.ExtensionsV1beta1().Deployments(rc.nsName).Get(rc.name, metav1.GetOptions{})
++		deployment, err := rc.clientSet.AppsV1().Deployments(rc.nsName).Get(rc.name, metav1.GetOptions{})
+ 		framework.ExpectNoError(err)
+ 		if deployment == nil {
+ 			framework.Failf(deploymentIsNil)
+ 		}
+ 		return int(deployment.Status.ReadyReplicas)
+ 	case KindReplicaSet:
+-		rs, err := rc.clientSet.ExtensionsV1beta1().ReplicaSets(rc.nsName).Get(rc.name, metav1.GetOptions{})
++		rs, err := rc.clientSet.AppsV1().ReplicaSets(rc.nsName).Get(rc.name, metav1.GetOptions{})
+ 		framework.ExpectNoError(err)
+ 		if rs == nil {
+ 			framework.Failf(rsIsNil)
+diff --git a/test/e2e/framework/ingress/ingress_utils.go b/test/e2e/framework/ingress/ingress_utils.go
+index 219b718dd2..c24f98da34 100644
+--- a/test/e2e/framework/ingress/ingress_utils.go
++++ b/test/e2e/framework/ingress/ingress_utils.go
+@@ -37,6 +37,7 @@ import (
+ 	"github.com/golang/glog"
+ 
+ 	compute "google.golang.org/api/compute/v1"
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+ 	extensions "k8s.io/api/extensions/v1beta1"
+ 	apierrs "k8s.io/apimachinery/pkg/api/errors"
+@@ -896,12 +897,12 @@ func generateBacksideHTTPSServiceSpec() *v1.Service {
+ 	}
+ }
+ 
+-func generateBacksideHTTPSDeploymentSpec() *extensions.Deployment {
+-	return &extensions.Deployment{
++func generateBacksideHTTPSDeploymentSpec() *apps.Deployment {
++	return &apps.Deployment{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: "echoheaders-https",
+ 		},
+-		Spec: extensions.DeploymentSpec{
++		Spec: apps.DeploymentSpec{
+ 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+ 				"app": "echoheaders-https",
+ 			}},
+@@ -929,8 +930,8 @@ func generateBacksideHTTPSDeploymentSpec() *extensions.Deployment {
+ }
+ 
+ // SetUpBacksideHTTPSIngress sets up deployment, service and ingress with backside HTTPS configured.
+-func (j *IngressTestJig) SetUpBacksideHTTPSIngress(cs clientset.Interface, namespace string, staticIPName string) (*extensions.Deployment, *v1.Service, *extensions.Ingress, error) {
+-	deployCreated, err := cs.ExtensionsV1beta1().Deployments(namespace).Create(generateBacksideHTTPSDeploymentSpec())
++func (j *IngressTestJig) SetUpBacksideHTTPSIngress(cs clientset.Interface, namespace string, staticIPName string) (*apps.Deployment, *v1.Service, *extensions.Ingress, error) {
++	deployCreated, err := cs.AppsV1().Deployments(namespace).Create(generateBacksideHTTPSDeploymentSpec())
+ 	if err != nil {
+ 		return nil, nil, nil, err
+ 	}
+@@ -953,7 +954,7 @@ func (j *IngressTestJig) SetUpBacksideHTTPSIngress(cs clientset.Interface, names
+ }
+ 
+ // DeleteTestResource deletes given deployment, service and ingress.
+-func (j *IngressTestJig) DeleteTestResource(cs clientset.Interface, deploy *extensions.Deployment, svc *v1.Service, ing *extensions.Ingress) []error {
++func (j *IngressTestJig) DeleteTestResource(cs clientset.Interface, deploy *apps.Deployment, svc *v1.Service, ing *extensions.Ingress) []error {
+ 	var errs []error
+ 	if ing != nil {
+ 		if err := j.runDelete(ing); err != nil {
+@@ -966,7 +967,7 @@ func (j *IngressTestJig) DeleteTestResource(cs clientset.Interface, deploy *exte
+ 		}
+ 	}
+ 	if deploy != nil {
+-		if err := cs.ExtensionsV1beta1().Deployments(deploy.Namespace).Delete(deploy.Name, nil); err != nil {
++		if err := cs.AppsV1().Deployments(deploy.Namespace).Delete(deploy.Name, nil); err != nil {
+ 			errs = append(errs, fmt.Errorf("error while deleting deployment %s/%s: %v", deploy.Namespace, deploy.Name, err))
+ 		}
+ 	}
+diff --git a/test/e2e/framework/util.go b/test/e2e/framework/util.go
+index 0d19764d9c..f3abb24d8e 100644
+--- a/test/e2e/framework/util.go
++++ b/test/e2e/framework/util.go
+@@ -656,7 +656,7 @@ func WaitForPodsRunningReady(c clientset.Interface, ns string, minPods, allowedN
+ 			replicaOk += rc.Status.ReadyReplicas
+ 		}
+ 
+-		rsList, err := c.ExtensionsV1beta1().ReplicaSets(ns).List(metav1.ListOptions{})
++		rsList, err := c.AppsV1().ReplicaSets(ns).List(metav1.ListOptions{})
+ 		if err != nil {
+ 			Logf("Error getting replication sets in namespace %q: %v", ns, err)
+ 			if testutils.IsRetryableAPIError(err) {
+@@ -3035,11 +3035,11 @@ func getRuntimeObjectForKind(c clientset.Interface, kind schema.GroupKind, ns, n
+ 	case api.Kind("ReplicationController"):
+ 		return c.CoreV1().ReplicationControllers(ns).Get(name, metav1.GetOptions{})
+ 	case extensionsinternal.Kind("ReplicaSet"), appsinternal.Kind("ReplicaSet"):
+-		return c.ExtensionsV1beta1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
++		return c.AppsV1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
+ 	case extensionsinternal.Kind("Deployment"), appsinternal.Kind("Deployment"):
+-		return c.ExtensionsV1beta1().Deployments(ns).Get(name, metav1.GetOptions{})
++		return c.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
+ 	case extensionsinternal.Kind("DaemonSet"):
+-		return c.ExtensionsV1beta1().DaemonSets(ns).Get(name, metav1.GetOptions{})
++		return c.AppsV1().DaemonSets(ns).Get(name, metav1.GetOptions{})
+ 	case batchinternal.Kind("Job"):
+ 		return c.BatchV1().Jobs(ns).Get(name, metav1.GetOptions{})
+ 	default:
+diff --git a/test/e2e/kubectl/kubectl.go b/test/e2e/kubectl/kubectl.go
+index 333e665072..7986bcadf2 100644
+--- a/test/e2e/kubectl/kubectl.go
++++ b/test/e2e/kubectl/kubectl.go
+@@ -1424,7 +1424,7 @@ metadata:
+ 			By("running the image " + nginxImage)
+ 			framework.RunKubectlOrDie("run", dName, "--image="+nginxImage, "--generator=deployment/v1beta1", nsFlag)
+ 			By("verifying the deployment " + dName + " was created")
+-			d, err := c.ExtensionsV1beta1().Deployments(ns).Get(dName, metav1.GetOptions{})
++			d, err := c.AppsV1().Deployments(ns).Get(dName, metav1.GetOptions{})
+ 			if err != nil {
+ 				framework.Failf("Failed getting deployment %s: %v", dName, err)
+ 			}
+diff --git a/test/e2e/network/ingress.go b/test/e2e/network/ingress.go
+index 7d2aa8f1cd..1a0db30238 100644
+--- a/test/e2e/network/ingress.go
++++ b/test/e2e/network/ingress.go
+@@ -624,17 +624,17 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
+ 			})
+ 
+ 			By("Trigger rolling update and observe service disruption")
+-			deploy, err := f.ClientSet.ExtensionsV1beta1().Deployments(ns).Get(name, metav1.GetOptions{})
++			deploy, err := f.ClientSet.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
+ 			Expect(err).NotTo(HaveOccurred())
+ 			// trigger by changing graceful termination period to 60 seconds
+ 			gracePeriod := int64(60)
+ 			deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = &gracePeriod
+-			_, err = f.ClientSet.ExtensionsV1beta1().Deployments(ns).Update(deploy)
++			_, err = f.ClientSet.AppsV1().Deployments(ns).Update(deploy)
+ 			Expect(err).NotTo(HaveOccurred())
+ 			wait.Poll(10*time.Second, framework.LoadBalancerPollTimeout, func() (bool, error) {
+ 				res, err := jig.GetDistinctResponseFromIngress()
+ 				Expect(err).NotTo(HaveOccurred())
+-				deploy, err := f.ClientSet.ExtensionsV1beta1().Deployments(ns).Get(name, metav1.GetOptions{})
++				deploy, err := f.ClientSet.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
+ 				Expect(err).NotTo(HaveOccurred())
+ 				if int(deploy.Status.UpdatedReplicas) == replicas {
+ 					if res.Len() == replicas {
+diff --git a/test/e2e/network/scale/ingress.go b/test/e2e/network/scale/ingress.go
+index ce8d43c5ca..a570321f3a 100644
+--- a/test/e2e/network/scale/ingress.go
++++ b/test/e2e/network/scale/ingress.go
+@@ -22,6 +22,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+ 	extensions "k8s.io/api/extensions/v1beta1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+@@ -71,7 +72,7 @@ type IngressScaleFramework struct {
+ 	NumIngressesTest []int
+ 	OutputFile       string
+ 
+-	ScaleTestDeploy *extensions.Deployment
++	ScaleTestDeploy *apps.Deployment
+ 	ScaleTestSvcs   []*v1.Service
+ 	ScaleTestIngs   []*extensions.Ingress
+ 
+@@ -147,7 +148,7 @@ func (f *IngressScaleFramework) CleanupScaleTest() []error {
+ 	}
+ 	if f.ScaleTestDeploy != nil {
+ 		f.Logger.Infof("Cleaning up deployment %s...", f.ScaleTestDeploy.Name)
+-		if err := f.Clientset.ExtensionsV1beta1().Deployments(f.ScaleTestDeploy.Namespace).Delete(f.ScaleTestDeploy.Name, nil); err != nil {
++		if err := f.Clientset.AppsV1().Deployments(f.ScaleTestDeploy.Namespace).Delete(f.ScaleTestDeploy.Name, nil); err != nil {
+ 			errs = append(errs, fmt.Errorf("Error while delting deployment %s/%s: %v", f.ScaleTestDeploy.Namespace, f.ScaleTestDeploy.Name, err))
+ 		}
+ 	}
+@@ -166,7 +167,7 @@ func (f *IngressScaleFramework) RunScaleTest() []error {
+ 
+ 	testDeploy := generateScaleTestBackendDeploymentSpec(scaleTestNumBackends)
+ 	f.Logger.Infof("Creating deployment %s...", testDeploy.Name)
+-	testDeploy, err := f.Jig.Client.ExtensionsV1beta1().Deployments(f.Namespace).Create(testDeploy)
++	testDeploy, err := f.Jig.Client.AppsV1().Deployments(f.Namespace).Create(testDeploy)
+ 	if err != nil {
+ 		errs = append(errs, fmt.Errorf("Failed to create deployment %s: %v", testDeploy.Name, err))
+ 		return errs
+@@ -436,12 +437,12 @@ func generateScaleTestServiceSpec(suffix string) *v1.Service {
+ 	}
+ }
+ 
+-func generateScaleTestBackendDeploymentSpec(numReplicas int32) *extensions.Deployment {
+-	return &extensions.Deployment{
++func generateScaleTestBackendDeploymentSpec(numReplicas int32) *apps.Deployment {
++	return &apps.Deployment{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: scaleTestBackendName,
+ 		},
+-		Spec: extensions.DeploymentSpec{
++		Spec: apps.DeploymentSpec{
+ 			Replicas: &numReplicas,
+ 			Selector: &metav1.LabelSelector{MatchLabels: scaleTestLabels},
+ 			Template: v1.PodTemplateSpec{
+diff --git a/test/e2e/scheduling/rescheduler.go b/test/e2e/scheduling/rescheduler.go
+new file mode 100644
+index 0000000000..ed1768beb4
+--- /dev/null
++++ b/test/e2e/scheduling/rescheduler.go
+@@ -0,0 +1,133 @@
++/*
++Copyright 2016 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package scheduling
++
++import (
++	"fmt"
++	"time"
++
++	"k8s.io/api/core/v1"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/labels"
++	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
++	"k8s.io/kubernetes/test/e2e/framework"
++	testutils "k8s.io/kubernetes/test/utils"
++	imageutils "k8s.io/kubernetes/test/utils/image"
++
++	. "github.com/onsi/ginkgo"
++	. "github.com/onsi/gomega"
++)
++
++const (
++	defaultTimeout = 3 * time.Minute
++)
++
++// This test requires Rescheduler to be enabled.
++var _ = SIGDescribe("Rescheduler [Serial]", func() {
++	f := framework.NewDefaultFramework("rescheduler")
++	var ns string
++	var totalMillicores int
++
++	BeforeEach(func() {
++		framework.Skipf("Rescheduler is being deprecated soon in Kubernetes 1.10")
++		ns = f.Namespace.Name
++		nodes := framework.GetReadySchedulableNodesOrDie(f.ClientSet)
++		nodeCount := len(nodes.Items)
++		Expect(nodeCount).NotTo(BeZero())
++
++		cpu := nodes.Items[0].Status.Capacity[v1.ResourceCPU]
++		totalMillicores = int((&cpu).MilliValue()) * nodeCount
++	})
++
++	It("should ensure that critical pod is scheduled in case there is no resources available", func() {
++		By("reserving all available cpu")
++		err := reserveAllCpu(f, "reserve-all-cpu", totalMillicores)
++		defer framework.DeleteRCAndWaitForGC(f.ClientSet, ns, "reserve-all-cpu")
++		framework.ExpectNoError(err)
++
++		By("creating a new instance of Dashboard and waiting for Dashboard to be scheduled")
++		label := labels.SelectorFromSet(labels.Set(map[string]string{"k8s-app": "kubernetes-dashboard"}))
++		listOpts := metav1.ListOptions{LabelSelector: label.String()}
++		deployments, err := f.ClientSet.AppsV1().Deployments(metav1.NamespaceSystem).List(listOpts)
++		framework.ExpectNoError(err)
++		Expect(len(deployments.Items)).Should(Equal(1))
++
++		deployment := deployments.Items[0]
++		replicas := uint(*(deployment.Spec.Replicas))
++
++		err = framework.ScaleDeployment(f.ClientSet, f.ScalesGetter, metav1.NamespaceSystem, deployment.Name, replicas+1, true)
++		defer framework.ExpectNoError(framework.ScaleDeployment(f.ClientSet, f.ScalesGetter, metav1.NamespaceSystem, deployment.Name, replicas, true))
++		framework.ExpectNoError(err)
++
++	})
++})
++
++func reserveAllCpu(f *framework.Framework, id string, millicores int) error {
++	timeout := 5 * time.Minute
++	replicas := millicores / 100
++
++	reserveCpu(f, id, 1, 100)
++	framework.ExpectNoError(framework.ScaleRC(f.ClientSet, f.ScalesGetter, f.Namespace.Name, id, uint(replicas), false))
++
++	for start := time.Now(); time.Since(start) < timeout; time.Sleep(10 * time.Second) {
++		pods, err := framework.GetPodsInNamespace(f.ClientSet, f.Namespace.Name, framework.ImagePullerLabels)
++		if err != nil {
++			return err
++		}
++
++		if len(pods) != replicas {
++			continue
++		}
++
++		allRunningOrUnschedulable := true
++		for _, pod := range pods {
++			if !podRunningOrUnschedulable(pod) {
++				allRunningOrUnschedulable = false
++				break
++			}
++		}
++		if allRunningOrUnschedulable {
++			return nil
++		}
++	}
++	return fmt.Errorf("Pod name %s: Gave up waiting %v for %d pods to come up", id, timeout, replicas)
++}
++
++func podRunningOrUnschedulable(pod *v1.Pod) bool {
++	_, cond := podutil.GetPodCondition(&pod.Status, v1.PodScheduled)
++	if cond != nil && cond.Status == v1.ConditionFalse && cond.Reason == "Unschedulable" {
++		return true
++	}
++	running, _ := testutils.PodRunningReady(pod)
++	return running
++}
++
++func reserveCpu(f *framework.Framework, id string, replicas, millicores int) {
++	By(fmt.Sprintf("Running RC which reserves %v millicores", millicores))
++	request := int64(millicores / replicas)
++	config := &testutils.RCConfig{
++		Client:         f.ClientSet,
++		InternalClient: f.InternalClientset,
++		Name:           id,
++		Namespace:      f.Namespace.Name,
++		Timeout:        defaultTimeout,
++		Image:          imageutils.GetPauseImageName(),
++		Replicas:       replicas,
++		CpuRequest:     request,
++	}
++	framework.ExpectNoError(framework.RunRC(*config))
++}
+diff --git a/test/e2e/storage/persistent_volumes-local.go b/test/e2e/storage/persistent_volumes-local.go
+index f4d066319a..cd37ee545e 100644
+--- a/test/e2e/storage/persistent_volumes-local.go
++++ b/test/e2e/storage/persistent_volumes-local.go
+@@ -31,7 +31,6 @@ import (
+ 
+ 	appsv1 "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	extv1beta1 "k8s.io/api/extensions/v1beta1"
+ 	rbacv1beta1 "k8s.io/api/rbac/v1beta1"
+ 	storagev1 "k8s.io/api/storage/v1"
+ 	"k8s.io/apimachinery/pkg/api/resource"
+@@ -1631,7 +1630,7 @@ func createProvisionerDaemonset(config *localTestConfig) {
+ 	provisionerPrivileged := true
+ 	mountProp := v1.MountPropagationHostToContainer
+ 
+-	provisioner := &extv1beta1.DaemonSet{
++	provisioner := &appsv1.DaemonSet{
+ 		TypeMeta: metav1.TypeMeta{
+ 			Kind:       "DaemonSet",
+ 			APIVersion: "extensions/v1beta1",
+@@ -1639,7 +1638,7 @@ func createProvisionerDaemonset(config *localTestConfig) {
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: daemonSetName,
+ 		},
+-		Spec: extv1beta1.DaemonSetSpec{
++		Spec: appsv1.DaemonSetSpec{
+ 			Selector: &metav1.LabelSelector{
+ 				MatchLabels: map[string]string{"app": "local-volume-provisioner"},
+ 			},
+@@ -1712,7 +1711,7 @@ func createProvisionerDaemonset(config *localTestConfig) {
+ 			},
+ 		},
+ 	}
+-	_, err := config.client.ExtensionsV1beta1().DaemonSets(config.ns).Create(provisioner)
++	_, err := config.client.AppsV1().DaemonSets(config.ns).Create(provisioner)
+ 	Expect(err).NotTo(HaveOccurred())
+ 
+ 	kind := schema.GroupKind{Group: "extensions", Kind: "DaemonSet"}
+@@ -1736,12 +1735,12 @@ func findProvisionerDaemonsetPodName(config *localTestConfig) string {
+ }
+ 
+ func deleteProvisionerDaemonset(config *localTestConfig) {
+-	ds, err := config.client.ExtensionsV1beta1().DaemonSets(config.ns).Get(daemonSetName, metav1.GetOptions{})
++	ds, err := config.client.AppsV1().DaemonSets(config.ns).Get(daemonSetName, metav1.GetOptions{})
+ 	if ds == nil {
+ 		return
+ 	}
+ 
+-	err = config.client.ExtensionsV1beta1().DaemonSets(config.ns).Delete(daemonSetName, nil)
++	err = config.client.AppsV1().DaemonSets(config.ns).Delete(daemonSetName, nil)
+ 	Expect(err).NotTo(HaveOccurred())
+ 
+ 	err = wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+diff --git a/test/e2e/storage/vsphere/vsphere_volume_node_poweroff.go b/test/e2e/storage/vsphere/vsphere_volume_node_poweroff.go
+index a105d4c765..cd2e4f0088 100644
+--- a/test/e2e/storage/vsphere/vsphere_volume_node_poweroff.go
++++ b/test/e2e/storage/vsphere/vsphere_volume_node_poweroff.go
+@@ -94,8 +94,9 @@ var _ = utils.SIGDescribe("Node Poweroff [Feature:vsphere] [Slow] [Disruptive]",
+ 
+ 		By("Creating a Deployment")
+ 		deployment, err := framework.CreateDeployment(client, int32(1), map[string]string{"test": "app"}, nil, namespace, pvclaims, "")
++
+ 		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create Deployment with err: %v", err))
+-		defer client.ExtensionsV1beta1().Deployments(namespace).Delete(deployment.Name, &metav1.DeleteOptions{})
++		defer client.AppsV1().Deployments(namespace).Delete(deployment.Name, &metav1.DeleteOptions{})
+ 
+ 		By("Get pod from the deployement")
+ 		podList, err := framework.GetPodsForDeployment(client, deployment)
+diff --git a/test/e2e/upgrades/apps/daemonsets.go b/test/e2e/upgrades/apps/daemonsets.go
+index 3503700389..d69cfa59f4 100644
+--- a/test/e2e/upgrades/apps/daemonsets.go
++++ b/test/e2e/upgrades/apps/daemonsets.go
+@@ -23,7 +23,7 @@ import (
+ 
+ 	"k8s.io/api/core/v1"
+ 
+-	extensions "k8s.io/api/extensions/v1beta1"
++	apps "k8s.io/api/apps/v1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/kubernetes/test/e2e/framework"
+ 	"k8s.io/kubernetes/test/e2e/upgrades"
+@@ -34,7 +34,7 @@ import (
+ // DaemonSetUpgradeTest tests that a DaemonSet is running before and after
+ // a cluster upgrade.
+ type DaemonSetUpgradeTest struct {
+-	daemonSet *extensions.DaemonSet
++	daemonSet *apps.DaemonSet
+ }
+ 
+ func (DaemonSetUpgradeTest) Name() string { return "[sig-apps] daemonset-upgrade" }
+@@ -47,12 +47,12 @@ func (t *DaemonSetUpgradeTest) Setup(f *framework.Framework) {
+ 
+ 	ns := f.Namespace
+ 
+-	t.daemonSet = &extensions.DaemonSet{
++	t.daemonSet = &apps.DaemonSet{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Namespace: ns.Name,
+ 			Name:      daemonSetName,
+ 		},
+-		Spec: extensions.DaemonSetSpec{
++		Spec: apps.DaemonSetSpec{
+ 			Template: v1.PodTemplateSpec{
+ 				ObjectMeta: metav1.ObjectMeta{
+ 					Labels: labelSet,
+@@ -72,7 +72,7 @@ func (t *DaemonSetUpgradeTest) Setup(f *framework.Framework) {
+ 
+ 	By("Creating a DaemonSet")
+ 	var err error
+-	if t.daemonSet, err = f.ClientSet.ExtensionsV1beta1().DaemonSets(ns.Name).Create(t.daemonSet); err != nil {
++	if t.daemonSet, err = f.ClientSet.AppsV1().DaemonSets(ns.Name).Create(t.daemonSet); err != nil {
+ 		framework.Failf("unable to create test DaemonSet %s: %v", t.daemonSet.Name, err)
+ 	}
+ 
+@@ -168,7 +168,7 @@ func checkDaemonPodOnNodes(f *framework.Framework, namespace string, labelSet ma
+ }
+ 
+ func checkDaemonStatus(f *framework.Framework, namespace string, dsName string) (bool, error) {
+-	ds, err := f.ClientSet.ExtensionsV1beta1().DaemonSets(namespace).Get(dsName, metav1.GetOptions{})
++	ds, err := f.ClientSet.AppsV1().DaemonSets(namespace).Get(dsName, metav1.GetOptions{})
+ 	if err != nil {
+ 		return false, err
+ 	}
+diff --git a/test/e2e/upgrades/kube_proxy_migration.go b/test/e2e/upgrades/kube_proxy_migration.go
+index e4c11c34ce..3faa0271ee 100644
+--- a/test/e2e/upgrades/kube_proxy_migration.go
++++ b/test/e2e/upgrades/kube_proxy_migration.go
+@@ -20,8 +20,8 @@ import (
+ 	"fmt"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/apimachinery/pkg/labels"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+@@ -213,8 +213,8 @@ func getKubeProxyStaticPods(c clientset.Interface) (*v1.PodList, error) {
+ 	return c.CoreV1().Pods(metav1.NamespaceSystem).List(listOpts)
+ }
+ 
+-func getKubeProxyDaemonSet(c clientset.Interface) (*extensions.DaemonSetList, error) {
++func getKubeProxyDaemonSet(c clientset.Interface) (*apps.DaemonSetList, error) {
+ 	label := labels.SelectorFromSet(labels.Set(map[string]string{clusterAddonLabelKey: kubeProxyLabelName}))
+ 	listOpts := metav1.ListOptions{LabelSelector: label.String()}
+-	return c.ExtensionsV1beta1().DaemonSets(metav1.NamespaceSystem).List(listOpts)
++	return c.AppsV1().DaemonSets(metav1.NamespaceSystem).List(listOpts)
+ }
+diff --git a/test/integration/apiserver/apiserver_test.go b/test/integration/apiserver/apiserver_test.go
+index 38e604faf8..f715f159ef 100644
+--- a/test/integration/apiserver/apiserver_test.go
++++ b/test/integration/apiserver/apiserver_test.go
+@@ -27,8 +27,8 @@ import (
+ 	"testing"
+ 
+ 	"github.com/golang/glog"
++	apps "k8s.io/api/apps/v1"
+ 	"k8s.io/api/core/v1"
+-	"k8s.io/api/extensions/v1beta1"
+ 	"k8s.io/apimachinery/pkg/api/meta"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/apimachinery/pkg/runtime"
+@@ -85,17 +85,18 @@ func path(resource, namespace, name string) string {
+ 	return testapi.Extensions.ResourcePath(resource, namespace, name)
+ }
+ 
+-func newRS(namespace string) *v1beta1.ReplicaSet {
+-	return &v1beta1.ReplicaSet{
++func newRS(namespace string) *apps.ReplicaSet {
++	return &apps.ReplicaSet{
+ 		TypeMeta: metav1.TypeMeta{
+ 			Kind:       "ReplicaSet",
+-			APIVersion: "extensions/v1beta1",
++			APIVersion: "apps/v1",
+ 		},
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Namespace:    namespace,
+ 			GenerateName: "apiserver-test",
+ 		},
+-		Spec: v1beta1.ReplicaSetSpec{
++		Spec: apps.ReplicaSetSpec{
++			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"name": "test"}},
+ 			Template: v1.PodTemplateSpec{
+ 				ObjectMeta: metav1.ObjectMeta{
+ 					Labels: map[string]string{"name": "test"},
+@@ -129,7 +130,7 @@ func Test202StatusCode(t *testing.T) {
+ 	ns := framework.CreateTestingNamespace("status-code", s, t)
+ 	defer framework.DeleteTestingNamespace(ns, s, t)
+ 
+-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
++	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
+ 
+ 	// 1. Create the resource without any finalizer and then delete it without setting DeleteOptions.
+ 	// Verify that server returns 200 in this case.
+@@ -179,7 +180,7 @@ func TestAPIListChunking(t *testing.T) {
+ 	ns := framework.CreateTestingNamespace("list-paging", s, t)
+ 	defer framework.DeleteTestingNamespace(ns, s, t)
+ 
+-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
++	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
+ 
+ 	for i := 0; i < 4; i++ {
+ 		rs := newRS(ns.Name)
+@@ -228,7 +229,7 @@ func TestAPIListChunking(t *testing.T) {
+ 	}
+ 	var names []string
+ 	if err := meta.EachListItem(listObj, func(obj runtime.Object) error {
+-		rs := obj.(*v1beta1.ReplicaSet)
++		rs := obj.(*apps.ReplicaSet)
+ 		names = append(names, rs.Name)
+ 		return nil
+ 	}); err != nil {
+diff --git a/test/integration/deployment/deployment_test.go b/test/integration/deployment/deployment_test.go
+index aa09be918e..72fc7d4dc3 100644
+--- a/test/integration/deployment/deployment_test.go
++++ b/test/integration/deployment/deployment_test.go
+@@ -1252,12 +1252,12 @@ func TestGeneralReplicaSetAdoption(t *testing.T) {
+ 	// with Controller=false, the deployment should add a second OwnerReference (ControllerRef) pointing to itself
+ 	// with Controller=true
+ 	var falseVar = false
+-	ownerReference := metav1.OwnerReference{UID: uuid.NewUUID(), APIVersion: "apps/v1beta1", Kind: "StatefulSet", Name: deploymentName, Controller: &falseVar}
++	ownerReference := metav1.OwnerReference{UID: uuid.NewUUID(), APIVersion: "apps/v1", Kind: "StatefulSet", Name: deploymentName, Controller: &falseVar}
+ 	testRSControllerRefPatch(t, tester, rs, &ownerReference, 2)
+ 
+ 	// When the only OwnerReference of the RS points to the deployment with Controller=false,
+ 	// the deployment should set Controller=true for the only OwnerReference
+-	ownerReference = metav1.OwnerReference{UID: tester.deployment.UID, APIVersion: "extensions/v1beta1", Kind: "Deployment", Name: deploymentName, Controller: &falseVar}
++	ownerReference = metav1.OwnerReference{UID: tester.deployment.UID, APIVersion: "apps/v1", Kind: "Deployment", Name: deploymentName, Controller: &falseVar}
+ 	testRSControllerRefPatch(t, tester, rs, &ownerReference, 1)
+ }
+ 
+diff --git a/test/integration/evictions/evictions_test.go b/test/integration/evictions/evictions_test.go
+index 4a88a07181..6354c2b5d8 100644
+--- a/test/integration/evictions/evictions_test.go
++++ b/test/integration/evictions/evictions_test.go
+@@ -330,9 +330,9 @@ func rmSetup(t *testing.T) (*httptest.Server, framework.CloseFunc, *disruption.D
+ 		informers.Core().V1().Pods(),
+ 		informers.Policy().V1beta1().PodDisruptionBudgets(),
+ 		informers.Core().V1().ReplicationControllers(),
+-		informers.Extensions().V1beta1().ReplicaSets(),
+-		informers.Extensions().V1beta1().Deployments(),
+-		informers.Apps().V1beta1().StatefulSets(),
++		informers.Apps().V1().ReplicaSets(),
++		informers.Apps().V1().Deployments(),
++		informers.Apps().V1().StatefulSets(),
+ 		clientset.NewForConfigOrDie(restclient.AddUserAgent(&config, "disruption-controller")),
+ 	)
+ 	return s, closeFn, rm, informers, clientSet
+diff --git a/test/integration/replicaset/replicaset_test.go b/test/integration/replicaset/replicaset_test.go
+index d19180ea62..b60a0d3142 100644
+--- a/test/integration/replicaset/replicaset_test.go
++++ b/test/integration/replicaset/replicaset_test.go
+@@ -335,7 +335,7 @@ func setPodsReadyCondition(t *testing.T, clientSet clientset.Interface, pods *v1
+ 
+ func testScalingUsingScaleSubresource(t *testing.T, c clientset.Interface, rs *apps.ReplicaSet, replicas int32) {
+ 	ns := rs.Namespace
+-	rsClient := c.ExtensionsV1beta1().ReplicaSets(ns)
++	rsClient := c.AppsV1().ReplicaSets(ns)
+ 	newRS, err := rsClient.Get(rs.Name, metav1.GetOptions{})
+ 	if err != nil {
+ 		t.Fatalf("Failed to obtain rs %s: %v", rs.Name, err)
+@@ -639,7 +639,7 @@ func TestOverlappingRSs(t *testing.T) {
+ 
+ 	// Expect both RSs have .status.replicas = .spec.replicas
+ 	for i := 0; i < 2; i++ {
+-		newRS, err := c.ExtensionsV1beta1().ReplicaSets(ns.Name).Get(fmt.Sprintf("rs-%d", i+1), metav1.GetOptions{})
++		newRS, err := c.AppsV1().ReplicaSets(ns.Name).Get(fmt.Sprintf("rs-%d", i+1), metav1.GetOptions{})
+ 		if err != nil {
+ 			t.Fatalf("failed to obtain rs rs-%d: %v", i+1, err)
+ 		}
+@@ -797,7 +797,7 @@ func TestReadyAndAvailableReplicas(t *testing.T) {
+ 	// by setting LastTransitionTime to more than 3600 seconds ago
+ 	setPodsReadyCondition(t, c, thirdPodList, v1.ConditionTrue, time.Now().Add(-120*time.Minute))
+ 
+-	rsClient := c.ExtensionsV1beta1().ReplicaSets(ns.Name)
++	rsClient := c.AppsV1().ReplicaSets(ns.Name)
+ 	if err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+ 		newRS, err := rsClient.Get(rs.Name, metav1.GetOptions{})
+ 		if err != nil {
+diff --git a/test/integration/scheduler/taint_test.go b/test/integration/scheduler/taint_test.go
+index 493c8e8544..ccf78618d5 100644
+--- a/test/integration/scheduler/taint_test.go
++++ b/test/integration/scheduler/taint_test.go
+@@ -102,7 +102,7 @@ func TestTaintNodeByCondition(t *testing.T) {
+ 		informers.Coordination().V1beta1().Leases(),
+ 		informers.Core().V1().Pods(),
+ 		informers.Core().V1().Nodes(),
+-		informers.Extensions().V1beta1().DaemonSets(),
++		informers.Apps().V1().DaemonSets(),
+ 		nil, // CloudProvider
+ 		cs,
+ 		time.Hour,   // Node monitor grace period
+diff --git a/test/integration/scheduler/util.go b/test/integration/scheduler/util.go
+index ddc624a050..f9f6d1ebec 100644
+--- a/test/integration/scheduler/util.go
++++ b/test/integration/scheduler/util.go
+@@ -238,9 +238,9 @@ func initDisruptionController(context *TestContext) *disruption.DisruptionContro
+ 		informers.Core().V1().Pods(),
+ 		informers.Policy().V1beta1().PodDisruptionBudgets(),
+ 		informers.Core().V1().ReplicationControllers(),
+-		informers.Extensions().V1beta1().ReplicaSets(),
+-		informers.Extensions().V1beta1().Deployments(),
+-		informers.Apps().V1beta1().StatefulSets(),
++		informers.Apps().V1().ReplicaSets(),
++		informers.Apps().V1().Deployments(),
++		informers.Apps().V1().StatefulSets(),
+ 		context.clientSet)
+ 
+ 	informers.Start(context.schedulerConfig.StopEverything)
+diff --git a/test/utils/create_resources.go b/test/utils/create_resources.go
+index f92649ac14..173f296c67 100644
+--- a/test/utils/create_resources.go
++++ b/test/utils/create_resources.go
+@@ -22,9 +22,9 @@ import (
+ 	"fmt"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	batch "k8s.io/api/batch/v1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	apierrs "k8s.io/apimachinery/pkg/api/errors"
+ 	utilnet "k8s.io/apimachinery/pkg/util/net"
+ 	"k8s.io/apimachinery/pkg/util/wait"
+@@ -97,12 +97,12 @@ func CreateRCWithRetries(c clientset.Interface, namespace string, obj *v1.Replic
+ 	return RetryWithExponentialBackOff(createFunc)
+ }
+ 
+-func CreateReplicaSetWithRetries(c clientset.Interface, namespace string, obj *extensions.ReplicaSet) error {
++func CreateReplicaSetWithRetries(c clientset.Interface, namespace string, obj *apps.ReplicaSet) error {
+ 	if obj == nil {
+ 		return fmt.Errorf("Object provided to create is empty")
+ 	}
+ 	createFunc := func() (bool, error) {
+-		_, err := c.ExtensionsV1beta1().ReplicaSets(namespace).Create(obj)
++		_, err := c.AppsV1().ReplicaSets(namespace).Create(obj)
+ 		if err == nil || apierrs.IsAlreadyExists(err) {
+ 			return true, nil
+ 		}
+@@ -114,12 +114,12 @@ func CreateReplicaSetWithRetries(c clientset.Interface, namespace string, obj *e
+ 	return RetryWithExponentialBackOff(createFunc)
+ }
+ 
+-func CreateDeploymentWithRetries(c clientset.Interface, namespace string, obj *extensions.Deployment) error {
++func CreateDeploymentWithRetries(c clientset.Interface, namespace string, obj *apps.Deployment) error {
+ 	if obj == nil {
+ 		return fmt.Errorf("Object provided to create is empty")
+ 	}
+ 	createFunc := func() (bool, error) {
+-		_, err := c.ExtensionsV1beta1().Deployments(namespace).Create(obj)
++		_, err := c.AppsV1().Deployments(namespace).Create(obj)
+ 		if err == nil || apierrs.IsAlreadyExists(err) {
+ 			return true, nil
+ 		}
+@@ -131,12 +131,12 @@ func CreateDeploymentWithRetries(c clientset.Interface, namespace string, obj *e
+ 	return RetryWithExponentialBackOff(createFunc)
+ }
+ 
+-func CreateDaemonSetWithRetries(c clientset.Interface, namespace string, obj *extensions.DaemonSet) error {
++func CreateDaemonSetWithRetries(c clientset.Interface, namespace string, obj *apps.DaemonSet) error {
+ 	if obj == nil {
+ 		return fmt.Errorf("Object provided to create is empty")
+ 	}
+ 	createFunc := func() (bool, error) {
+-		_, err := c.ExtensionsV1beta1().DaemonSets(namespace).Create(obj)
++		_, err := c.AppsV1().DaemonSets(namespace).Create(obj)
+ 		if err == nil || apierrs.IsAlreadyExists(err) {
+ 			return true, nil
+ 		}
+diff --git a/test/utils/delete_resources.go b/test/utils/delete_resources.go
+index 5c67afda20..58221f5638 100644
+--- a/test/utils/delete_resources.go
++++ b/test/utils/delete_resources.go
+@@ -38,11 +38,11 @@ func deleteResource(c clientset.Interface, kind schema.GroupKind, namespace, nam
+ 	case api.Kind("ReplicationController"):
+ 		return c.CoreV1().ReplicationControllers(namespace).Delete(name, options)
+ 	case extensionsinternal.Kind("ReplicaSet"), appsinternal.Kind("ReplicaSet"):
+-		return c.ExtensionsV1beta1().ReplicaSets(namespace).Delete(name, options)
++		return c.AppsV1().ReplicaSets(namespace).Delete(name, options)
+ 	case extensionsinternal.Kind("Deployment"), appsinternal.Kind("Deployment"):
+-		return c.ExtensionsV1beta1().Deployments(namespace).Delete(name, options)
++		return c.AppsV1().Deployments(namespace).Delete(name, options)
+ 	case extensionsinternal.Kind("DaemonSet"):
+-		return c.ExtensionsV1beta1().DaemonSets(namespace).Delete(name, options)
++		return c.AppsV1().DaemonSets(namespace).Delete(name, options)
+ 	case batchinternal.Kind("Job"):
+ 		return c.BatchV1().Jobs(namespace).Delete(name, options)
+ 	case api.Kind("Secret"):
+diff --git a/test/utils/runners.go b/test/utils/runners.go
+index 09da3be11e..e274825e51 100644
+--- a/test/utils/runners.go
++++ b/test/utils/runners.go
+@@ -24,9 +24,9 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	apps "k8s.io/api/apps/v1"
+ 	batch "k8s.io/api/batch/v1"
+ 	"k8s.io/api/core/v1"
+-	extensions "k8s.io/api/extensions/v1beta1"
+ 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+ 	apierrs "k8s.io/apimachinery/pkg/api/errors"
+ 	"k8s.io/apimachinery/pkg/api/resource"
+@@ -285,11 +285,11 @@ func (config *DeploymentConfig) GetGroupResource() schema.GroupResource {
+ }
+ 
+ func (config *DeploymentConfig) create() error {
+-	deployment := &extensions.Deployment{
++	deployment := &apps.Deployment{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: config.Name,
+ 		},
+-		Spec: extensions.DeploymentSpec{
++		Spec: apps.DeploymentSpec{
+ 			Replicas: func(i int) *int32 { x := int32(i); return &x }(config.Replicas),
+ 			Selector: &metav1.LabelSelector{
+ 				MatchLabels: map[string]string{
+@@ -356,11 +356,11 @@ func (config *ReplicaSetConfig) GetGroupResource() schema.GroupResource {
+ }
+ 
+ func (config *ReplicaSetConfig) create() error {
+-	rs := &extensions.ReplicaSet{
++	rs := &apps.ReplicaSet{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: config.Name,
+ 		},
+-		Spec: extensions.ReplicaSetSpec{
++		Spec: apps.ReplicaSetSpec{
+ 			Replicas: func(i int) *int32 { x := int32(i); return &x }(config.Replicas),
+ 			Selector: &metav1.LabelSelector{
+ 				MatchLabels: map[string]string{
+@@ -1259,11 +1259,11 @@ func (config *DaemonConfig) Run() error {
+ 	nameLabel := map[string]string{
+ 		"name": config.Name + "-daemon",
+ 	}
+-	daemon := &extensions.DaemonSet{
++	daemon := &apps.DaemonSet{
+ 		ObjectMeta: metav1.ObjectMeta{
+ 			Name: config.Name,
+ 		},
+-		Spec: extensions.DaemonSetSpec{
++		Spec: apps.DaemonSetSpec{
+ 			Template: v1.PodTemplateSpec{
+ 				ObjectMeta: metav1.ObjectMeta{
+ 					Labels: nameLabel,
+-- 
+2.16.1.windows.1
+
