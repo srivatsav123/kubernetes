@@ -14,15 +14,21 @@ jobs:
     steps:
     - checkout
     - run: go test ./pkg/controller
+  deploy-job:
+        steps:
+          - add_ssh_keys:
+              fingerprints:
+                - "17:48:d1:31:ea:1f:65:31:2f:3b:49:e3:f0:35:7a:e1"  
 workflows:
   version: 2
   workflow:
     jobs:
-    - build:
+    - build
     - test:
+           requires:
+             - build
     - deploy-job:
-        steps:
-          - add_ssh_keys:
-              fingerprints:
-                - "17:48:d1:31:ea:1f:65:31:2f:3b:49:e3:f0:35:7a:e1"
+           requires:
+             - test
+        
     
