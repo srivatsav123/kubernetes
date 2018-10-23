@@ -12,5 +12,10 @@ jobs:
     - image: circleci/golang:1.11.1
     working_directory: /go/src/k8s.io/kubernetes
     steps:
-    - checkout
     - run: go test ./pkg/controller
+workflows:
+  version: 2
+  workflow:
+    jobs:
+    - build
+    - test
