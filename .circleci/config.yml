@@ -26,6 +26,6 @@ workflows:
         steps:
           - add_ssh_keys:
               fingerprints:
-                - "SO:ME:FIN:G:ER:PR:IN:T"   
+                - "17:48:d1:31:ea:1f:65:31:2f:3b:49:e3:f0:35:7a:e1"   
                 requires:
                   -test
