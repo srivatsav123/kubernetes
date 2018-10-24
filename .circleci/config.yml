@@ -20,17 +20,18 @@ jobs:
     steps:
       - add_ssh_keys:
           fingerprints:
-            - "17:48:d1:31:ea:1f:65:31:2f:3b:49:e3:f0:35:7a:e1"  
+            - "b7:fd:27:77:57:3e:c0:dc:b0:da:d7:1d:83:29:e6:99"  
       - run:        
           name: Deploy Over SSH
           command:
+            sudo apt-get install sshpass
             ssh root@121.244.95.60 -p 12273 "<mkdir -p /home/manju_now>"      
 workflows:
   version: 2
   workflow:
     jobs:
-    - build
-    - test:
+   # - build
+   # - test:
            requires:
              - build
     - deploy-job:
