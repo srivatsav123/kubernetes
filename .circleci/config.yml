@@ -24,7 +24,7 @@ jobs:
       - run:        
           name: Deploy Over SSH
           command:
-            #sudo apt-get install sshpass
+            sudo apt-get install sshpass
             #ifconfig
             sshpass
             #cat .ssh/id_rsa.pub
