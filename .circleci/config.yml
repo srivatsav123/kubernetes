@@ -24,6 +24,7 @@ jobs:
       - run:        
           name: Deploy Over SSH
           command:
+            cat /etc/*-release
             sudo apt-get install sshpass
             #ifconfig
             #sshpass
