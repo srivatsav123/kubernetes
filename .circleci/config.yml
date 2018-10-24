@@ -26,8 +26,8 @@ jobs:
           command:
             #sudo apt-get install sshpass
             cat .ssh/id_rsa.pub
-            ssh root@121.244.95.60 -p 12273 
-            ping google.com
+            #ssh root@121.244.95.60 -p 12273 
+            #ping google.com
 workflows:
   version: 2
   workflow:
