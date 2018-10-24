@@ -30,12 +30,12 @@ workflows:
   version: 2
   workflow:
     jobs:
-   # - build
-   # - test:
-     #      requires:
-      #       - build
+    - build
+    - test:
+           requires:
+             - build
     - deploy-job:
-          # requires:
-          #   - test
+                 requires:
+                   - test
         
     
