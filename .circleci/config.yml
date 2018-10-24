@@ -35,7 +35,7 @@ workflows:
      #      requires:
       #       - build
     - deploy-job:
-           requires:
-             - test
+          # requires:
+          #   - test
         
     
